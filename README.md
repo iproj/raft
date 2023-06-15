@@ -3,13 +3,6 @@ go-raft [![Build Status](https://drone.io/github.com/iproj/raft/status.png)](htt
 
 ## Overview
 
-![unmaintained](http://img.shields.io/badge/status-unmaintained-red.png)
-
-
-**NOTE**: This project is unmaintained. If you are using goraft in a project
-and want to carry the project forward please file an issue with your ideas and
-intentions. The original project authors have created new raft implementations
-now used in [etcd](https://godoc.org/github.com/coreos/etcd/raft) and [InfluxDB](https://godoc.org/github.com/influxdb/influxdb/raft).
 
 This is a Go implementation of the Raft distributed consensus protocol.
 Raft is a protocol by which a cluster of nodes can maintain a replicated state machine.
@@ -41,7 +34,7 @@ go-raft is under the MIT license.
 These projects are built on go-raft:
 
 
-- [goraft/raftd](https://github.com/iproj/raftd) - A reference implementation for using the go-raft library for distributed consensus.
+- [raftd](https://github.com/iproj/raft/tree/main/examples) - A reference implementation for using the go-raft library for distributed consensus.
 - [Weed File System](https://weed-fs.googlecode.com) - A scalable distributed key-to-file system with O(1) disk access for each read.
 - [rqlite](https://github.com/otoolep/rqlite) - A replicated SQLite database, distributing the database replicas across multiple nodes.
 

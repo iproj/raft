@@ -1,14 +1,7 @@
 raftd
 =====
 
-![unmaintained](http://img.shields.io/badge/status-unmaintained-red.png)
 
-**NOTE**: This project is unmaintained. If you are using goraft in a project
-and want to carry the project forward please file an issue with your ideas and
-intentions. The original project authors have created new raft implementations
-now used in [etcd](https://godoc.org/github.com/coreos/etcd/raft) and [InfluxDB](https://godoc.org/github.com/influxdb/influxdb/raft).
-
-If you want to see a simple raft key-value store see the [etcd/raft example](https://github.com/coreos/etcd/tree/master/contrib/raftexample).
 
 ## Overview
 
@@ -41,20 +34,20 @@ If you try to send a change to a follower then it will simply be denied.
 First, genarate raftd:
 
 ```sh
-$ go build -v ./examples/raftd/
+$ go build -v -o ./bin/raftd ./examples/raftd/
 ```
 
 To start the first node in your cluster, simply specify a port and a directory where the data will be stored:
 
 ```sh
-$ raftd -p 4001 ~/node.1
+$ ./bin/raftd -p 4001 ~/node.1
 ```
 
 To add nodes to the cluster, you'll need to start on a different port and use a different data directory.
 You'll also need to specify the host/port of the leader of the cluster to join:
 
 ```sh
-$ raftd -p 4002 -join localhost:4001 ~/node.2
+$ ./bin/raftd -p 4002 -join localhost:4001 ~/node.2
 ```
 
 When you restart the node, it's already been joined to the cluster so you can remove the `-join` argument.
@@ -62,7 +55,7 @@ When you restart the node, it's already been joined to the cluster so you can re
 Finally, you can add one more node:
 
 ```sh
-$ raftd -p 4003 -join localhost:4001 ~/node.3
+$ ./bin/raftd -p 4003 -join localhost:4001 ~/node.3
 ```
 
 Now when you set values to the leader:
