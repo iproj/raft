@@ -21,7 +21,11 @@ type Peer struct {
 	heartbeatInterval time.Duration
 	lastActivity      time.Time
 	sync.RWMutex
+
+	heartbeatFailedCount int
 }
+
+const MAX_HEARTBEAT_FAILED_COUNT = 5
 
 //------------------------------------------------------------------------------
 //
@@ -168,6 +172,15 @@ func (p *Peer) heartbeat(c chan bool) {
 }
 
 func (p *Peer) flush() {
+
+	if p.heartbeatFailedCount > MAX_HEARTBEAT_FAILED_COUNT {
+		debugln("flush failed count more than: ", MAX_HEARTBEAT_FAILED_COUNT)
+		err := p.server.RemovePeer(p.Name)
+		if err != nil {
+			debugln("p.server.RemovePeer failed: ", err)
+		}
+		return
+	}
 	debugln("peer.heartbeat.flush: ", p.Name)
 	prevLogIndex := p.getPrevLogIndex()
 	term := p.server.currentTerm
@@ -194,6 +207,7 @@ func (p *Peer) sendAppendEntriesRequest(req *AppendEntriesRequest) {
 	if resp == nil {
 		p.server.DispatchEvent(newEvent(HeartbeatIntervalEventType, p, nil))
 		debugln("peer.append.timeout: ", p.server.Name(), "->", p.Name)
+		p.heartbeatFailedCount++
 		return
 	}
 	traceln("peer.append.resp: ", p.server.Name(), "<-", p.Name)

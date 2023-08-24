@@ -37,8 +37,9 @@ const (
 	// DefaultHeartbeatInterval is the interval that the leader will send
 	// AppendEntriesRequests to followers to maintain leadership.
 	DefaultHeartbeatInterval = 50 * time.Millisecond
-
+	// 1:3
 	DefaultElectionTimeout = 150 * time.Millisecond
+	DefaultMaxPeerCount    = 10 // 10 follower
 )
 
 // ElectionTimeoutThresholdPercent specifies the threshold at which the server
@@ -86,6 +87,8 @@ type Server interface {
 	ElectionTimeout() time.Duration
 	SetElectionTimeout(duration time.Duration)
 	HeartbeatInterval() time.Duration
+	MaxPeerCount() int
+	SetMaxPeerCount(count int)
 	SetHeartbeatInterval(duration time.Duration)
 	Transporter() Transporter
 	SetTransporter(t Transporter)
@@ -117,15 +120,16 @@ type server struct {
 	context     interface{}
 	currentTerm uint64
 
-	votedFor   string
-	log        *Log
-	leader     string
-	peers      map[string]*Peer
-	mutex      sync.RWMutex
-	syncedPeer map[string]bool
+	votedFor     string
+	log          *Log
+	leader       string
+	peers        map[string]*Peer
+	maxPeerCount int
+	mutex        sync.RWMutex
+	syncedPeer   map[string]bool
 
 	stopped           chan bool
-	c                 chan *ev
+	evChan            chan *ev
 	electionTimeout   time.Duration
 	heartbeatInterval time.Duration
 
@@ -149,7 +153,7 @@ type server struct {
 type ev struct {
 	target      interface{}
 	returnValue interface{}
-	c           chan error
+	errChan     chan error
 }
 
 //------------------------------------------------------------------------------
@@ -179,8 +183,9 @@ func NewServer(name string, path string, transporter Transporter, stateMachine S
 		context:                 ctx,
 		state:                   Stopped,
 		peers:                   make(map[string]*Peer),
+		maxPeerCount:            DefaultMaxPeerCount,
 		log:                     newLog(),
-		c:                       make(chan *ev, 256),
+		evChan:                  make(chan *ev, 256),
 		electionTimeout:         DefaultElectionTimeout,
 		heartbeatInterval:       DefaultHeartbeatInterval,
 		maxLogEntriesPerRequest: MaxLogEntriesPerRequest,
@@ -412,6 +417,18 @@ func (s *server) SetHeartbeatInterval(duration time.Duration) {
 	}
 }
 
+func (s *server) MaxPeerCount() int {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return s.maxPeerCount
+}
+
+func (s *server) SetMaxPeerCount(count int) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.maxPeerCount = count
+}
+
 //------------------------------------------------------------------------------
 //
 // Methods
@@ -621,16 +638,16 @@ func (s *server) send(value interface{}) (interface{}, error) {
 		return nil, StopError
 	}
 
-	event := &ev{target: value, c: make(chan error, 1)}
+	event := &ev{target: value, errChan: make(chan error, 1)}
 	select {
-	case s.c <- event:
+	case s.evChan <- event:
 	case <-s.stopped:
 		return nil, StopError
 	}
 	select {
 	case <-s.stopped:
 		return nil, StopError
-	case err := <-event.c:
+	case err := <-event.errChan:
 		return event.returnValue, err
 	}
 }
@@ -640,12 +657,12 @@ func (s *server) sendAsync(value interface{}) {
 		return
 	}
 
-	event := &ev{target: value, c: make(chan error, 1)}
+	event := &ev{target: value, errChan: make(chan error, 1)}
 	// try a non-blocking send first
 	// in most cases, this should not be blocking
 	// avoid create unnecessary go routines
 	select {
-	case s.c <- event:
+	case s.evChan <- event:
 		return
 	default:
 	}
@@ -654,7 +671,7 @@ func (s *server) sendAsync(value interface{}) {
 	go func() {
 		defer s.routineGroup.Done()
 		select {
-		case s.c <- event:
+		case s.evChan <- event:
 		case <-s.stopped:
 		}
 	}()
@@ -678,7 +695,7 @@ func (s *server) followerLoop() {
 			s.setState(Stopped)
 			return
 
-		case e := <-s.c:
+		case e := <-s.evChan:
 			switch req := e.target.(type) {
 			case JoinCommand:
 				//If no log entries exist and a self-join command is issued
@@ -705,7 +722,7 @@ func (s *server) followerLoop() {
 				err = NotLeaderError
 			}
 			// Callback to event.
-			e.c <- err
+			e.errChan <- err
 
 		case <-timeoutChan:
 			// only allow synced follower to promote to candidate
@@ -787,7 +804,7 @@ func (s *server) candidateLoop() {
 				votesGranted++
 			}
 
-		case e := <-s.c:
+		case e := <-s.evChan:
 			var err error
 			switch req := e.target.(type) {
 			case Command:
@@ -799,7 +816,7 @@ func (s *server) candidateLoop() {
 			}
 
 			// Callback to event.
-			e.c <- err
+			e.errChan <- err
 
 		case <-timeoutChan:
 			doVote = true
@@ -840,7 +857,7 @@ func (s *server) leaderLoop() {
 			s.setState(Stopped)
 			return
 
-		case e := <-s.c:
+		case e := <-s.evChan:
 			switch req := e.target.(type) {
 			case Command:
 				s.processCommand(req, e)
@@ -854,7 +871,7 @@ func (s *server) leaderLoop() {
 			}
 
 			// Callback to event.
-			e.c <- err
+			e.errChan <- err
 		}
 	}
 
@@ -869,7 +886,7 @@ func (s *server) snapshotLoop() {
 			s.setState(Stopped)
 			return
 
-		case e := <-s.c:
+		case e := <-s.evChan:
 			switch req := e.target.(type) {
 			case Command:
 				err = NotLeaderError
@@ -881,7 +898,7 @@ func (s *server) snapshotLoop() {
 				e.returnValue = s.processSnapshotRecoveryRequest(req)
 			}
 			// Callback to event.
-			e.c <- err
+			e.errChan <- err
 		}
 	}
 }
@@ -894,7 +911,22 @@ func (s *server) snapshotLoop() {
 // when the command has been successfully committed or an error has occurred.
 
 func (s *server) Do(command Command) (interface{}, error) {
-	return s.send(command)
+	if s.Leader() == "" || s.Leader() == s.Name() {
+		return s.send(command)
+	} else {
+		return s.redirect(command)
+	}
+}
+
+func (s *server) redirect(command Command) (interface{}, error) {
+	if !s.Running() {
+		return nil, StopError
+	}
+	err := s.Transporter().Redirect(s, command)
+	if err != nil {
+		s.debugln("redirect failed: ", err)
+	}
+	return nil, err
 }
 
 // Processes a command.
@@ -906,13 +938,13 @@ func (s *server) processCommand(command Command, e *ev) {
 
 	if err != nil {
 		s.debugln("server.command.log.entry.error:", err)
-		e.c <- err
+		e.errChan <- err
 		return
 	}
 
 	if err := s.log.appendEntry(entry); err != nil {
 		s.debugln("server.command.log.error:", err)
-		e.c <- err
+		e.errChan <- err
 		return
 	}
 
@@ -1026,7 +1058,7 @@ func (s *server) processAppendEntriesResponse(resp *AppendEntriesResponse) {
 		// leader needs to do a fsync before committing log entries
 		s.log.sync()
 		s.log.setCommitIndex(commitIndex)
-		s.debugln("commit index ", commitIndex)
+		s.debugln("processAppendEntriesResponse commit index ", commitIndex)
 	}
 }
 
@@ -1132,7 +1164,7 @@ func (s *server) AddPeer(name string, connectiongString string) error {
 
 // Removes a peer from the server.
 func (s *server) RemovePeer(name string) error {
-	s.debugln("server.peer.remove: ", name, len(s.peers))
+	s.debugln("server.peer.remove: ", name, s.peers)
 
 	// Skip the Peer if it has the same name as the Server
 	if name != s.Name() {
@@ -1162,6 +1194,9 @@ func (s *server) RemovePeer(name string) error {
 		delete(s.peers, name)
 
 		s.DispatchEvent(newEvent(RemovePeerEventType, name, nil))
+	} else {
+		s.debugln("Stop peer: ", s.Name())
+		s.Stop()
 	}
 
 	// Write the configuration to file.

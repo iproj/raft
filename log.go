@@ -377,7 +377,7 @@ func (l *Log) setCommitIndex(index uint64) error {
 		debugf("setCommitIndex.set.result index: %v, entries index: %v", i, entryIndex)
 		if entry.event != nil {
 			entry.event.returnValue = returnValue
-			entry.event.c <- err
+			entry.event.errChan <- err
 		}
 
 		_, isJoinCommand := command.(JoinCommand)
@@ -432,7 +432,7 @@ func (l *Log) truncate(index uint64, term uint64) error {
 		// notify clients if this node is the previous leader
 		for _, entry := range l.entries {
 			if entry.event != nil {
-				entry.event.c <- errors.New("command failed to be committed due to node failure")
+				entry.event.errChan <- errors.New("command failed to be committed due to node failure")
 			}
 		}
 
@@ -456,7 +456,7 @@ func (l *Log) truncate(index uint64, term uint64) error {
 			for i := index - l.startIndex; i < uint64(len(l.entries)); i++ {
 				entry := l.entries[i]
 				if entry.event != nil {
-					entry.event.c <- errors.New("command failed to be committed due to node failure")
+					entry.event.errChan <- errors.New("command failed to be committed due to node failure")
 				}
 			}
 

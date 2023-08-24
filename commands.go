@@ -37,6 +37,7 @@ func (c *DefaultJoinCommand) CommandName() string {
 }
 
 func (c *DefaultJoinCommand) Apply(server Server) (interface{}, error) {
+	debugln("server.AddPeer: ", c.Name)
 	err := server.AddPeer(c.Name, c.ConnectionString)
 
 	return []byte("join"), err
@@ -52,6 +53,7 @@ func (c *DefaultLeaveCommand) CommandName() string {
 }
 
 func (c *DefaultLeaveCommand) Apply(server Server) (interface{}, error) {
+	debugln("server.RemovePeer: ", c.Name)
 	err := server.RemovePeer(c.Name)
 
 	return []byte("leave"), err

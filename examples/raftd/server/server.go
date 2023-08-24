@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -65,7 +66,7 @@ func (s *Server) ListenAndServe(leader string) error {
 	var err error
 
 	log.Printf("Initializing Raft Server: %s", s.path)
-
+	raft.SetLogLevel(raft.Trace)
 	// Initialize and start Raft server.
 	transporter := raft.NewHTTPTransporter("/raft", 200*time.Millisecond)
 	s.raftServer, err = raft.NewServer(s.name, s.path, transporter, nil, s.db, "")
@@ -81,9 +82,9 @@ func (s *Server) ListenAndServe(leader string) error {
 		log.Println("Attempting to join leader:", leader)
 
 		if !s.raftServer.IsLogEmpty() {
-			log.Fatal("Cannot join with an existing log")
+			os.RemoveAll(s.path)
 		}
-		if err := s.Join(leader); err != nil {
+		if err := s.Join(leader, transporter.PeerJoinPath()); err != nil {
 			log.Fatal(err)
 		}
 
@@ -114,7 +115,7 @@ func (s *Server) ListenAndServe(leader string) error {
 
 	s.router.HandleFunc("/db/{key}", s.readHandler).Methods("GET")
 	s.router.HandleFunc("/db/{key}", s.writeHandler).Methods("POST")
-	s.router.HandleFunc("/join", s.joinHandler).Methods("POST")
+	s.router.HandleFunc(transporter.RedirectPath(), s.redirectHandler).Methods("POST")
 
 	log.Println("Listening at:", s.connectionString())
 
@@ -128,7 +129,7 @@ func (s *Server) HandleFunc(pattern string, handler func(http.ResponseWriter, *h
 }
 
 // Joins to the leader of an existing cluster.
-func (s *Server) Join(leader string) error {
+func (s *Server) Join(leader, apiPath string) error {
 	command := &raft.DefaultJoinCommand{
 		Name:             s.raftServer.Name(),
 		ConnectionString: s.connectionString(),
@@ -136,7 +137,8 @@ func (s *Server) Join(leader string) error {
 
 	var b bytes.Buffer
 	json.NewEncoder(&b).Encode(command)
-	resp, err := http.Post(fmt.Sprintf("http://%s/join", leader), "application/json", &b)
+	url := fmt.Sprintf("http://%s%s", leader, apiPath)
+	resp, err := http.Post(url, "application/json", &b)
 	if err != nil {
 		return err
 	}
@@ -145,6 +147,23 @@ func (s *Server) Join(leader string) error {
 	return nil
 }
 
+func (s *Server) redirectHandler(w http.ResponseWriter, req *http.Request) {
+	command := &command.WriteCommand{}
+
+	if err := json.NewDecoder(req.Body).Decode(command); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_, err := s.raftServer.Do(command)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Write([]byte("OK"))
+	w.WriteHeader(http.StatusOK)
+}
+
+/*
 func (s *Server) joinHandler(w http.ResponseWriter, req *http.Request) {
 	command := &raft.DefaultJoinCommand{}
 
@@ -157,7 +176,7 @@ func (s *Server) joinHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 }
-
+*/
 func (s *Server) readHandler(w http.ResponseWriter, req *http.Request) {
 	vars := mux.Vars(req)
 	value := s.db.Get(vars["key"])

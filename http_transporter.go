@@ -2,6 +2,7 @@ package raft
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,9 @@ type HTTPTransporter struct {
 	requestVotePath      string
 	snapshotPath         string
 	snapshotRecoveryPath string
+	redirectPath         string
+	peerJoinPath         string
+	peerRemovePath       string
 	httpClient           http.Client
 	Transport            *http.Transport
 }
@@ -51,6 +55,9 @@ func NewHTTPTransporter(prefix string, timeout time.Duration) *HTTPTransporter {
 		requestVotePath:      joinPath(prefix, "/requestVote"),
 		snapshotPath:         joinPath(prefix, "/snapshot"),
 		snapshotRecoveryPath: joinPath(prefix, "/snapshotRecovery"),
+		redirectPath:         joinPath(prefix, "/redirect"),
+		peerJoinPath:         joinPath(prefix, "/join"),
+		peerRemovePath:       joinPath(prefix, "/remove"),
 		Transport:            &http.Transport{DisableKeepAlives: false},
 	}
 	t.httpClient.Transport = t.Transport
@@ -67,6 +74,14 @@ func NewHTTPTransporter(prefix string, timeout time.Duration) *HTTPTransporter {
 // Retrieves the path prefix used by the transporter.
 func (t *HTTPTransporter) Prefix() string {
 	return t.prefix
+}
+
+func (t *HTTPTransporter) RedirectPath() string {
+	return t.redirectPath
+}
+
+func (t *HTTPTransporter) PeerJoinPath() string {
+	return t.peerJoinPath
 }
 
 // Retrieves the AppendEntries path.
@@ -105,6 +120,8 @@ func (t *HTTPTransporter) Install(server Server, mux HTTPMuxer) {
 	mux.HandleFunc(t.RequestVotePath(), t.requestVoteHandler(server))
 	mux.HandleFunc(t.SnapshotPath(), t.snapshotHandler(server))
 	mux.HandleFunc(t.SnapshotRecoveryPath(), t.snapshotRecoveryHandler(server))
+	mux.HandleFunc(t.peerJoinPath, t.peerJoinHandler(server))
+	mux.HandleFunc(t.peerRemovePath, t.peerRemoveHandler(server))
 }
 
 //--------------------------------------
@@ -136,6 +153,25 @@ func (t *HTTPTransporter) SendAppendEntriesRequest(server Server, peer *Peer, re
 	}
 
 	return resp
+}
+
+func (t *HTTPTransporter) Redirect(server Server, command Command) error {
+
+	bytez, _ := json.Marshal(command)
+	peer, ok := server.Peers()[server.Leader()]
+	if !ok {
+		return fmt.Errorf("Leader: %s has not connectAddr", server.Leader())
+	}
+	url := fmt.Sprintf("%s%s", peer.ConnectionString, t.redirectPath)
+	httpResp, err := http.Post(url, "application/json", bytes.NewReader(bytez))
+	if err != nil {
+		return fmt.Errorf("Post %s failed: %v", url, err)
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Invalid http code: %d", httpResp.StatusCode)
+	}
+	return nil
 }
 
 // Sends a RequestVote RPC to a peer.
@@ -231,6 +267,50 @@ func (t *HTTPTransporter) SendSnapshotRecoveryRequest(server Server, peer *Peer,
 //--------------------------------------
 // Incoming
 //--------------------------------------
+
+func (t *HTTPTransporter) peerRemoveHandler(server Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		debugln(server.Name(), "RECV /remove")
+		command := &DefaultLeaveCommand{}
+		if err := json.NewDecoder(r.Body).Decode(command); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_, ok := server.Peers()[command.Name]
+		if !ok {
+			http.Error(w, fmt.Sprintf("Invalid peer: %s", command.Name), http.StatusBadRequest)
+			return
+		}
+		if _, err := server.Do(command); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+func (t *HTTPTransporter) peerJoinHandler(server Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		debugln(server.Name(), "RECV /join")
+		command := &DefaultJoinCommand{}
+		if err := json.NewDecoder(r.Body).Decode(command); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_, ok := server.Peers()[command.Name]
+		if ok {
+			http.Error(w, fmt.Sprintf("Already exist: %s", command.Name), http.StatusAlreadyReported)
+			return
+		}
+		if len(server.Peers()) >= server.MaxPeerCount() {
+			http.Error(w, "Can't be joined", http.StatusNotAcceptable)
+			return
+		}
+		if _, err := server.Do(command); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+}
 
 // Handles incoming AppendEntries requests.
 func (t *HTTPTransporter) appendEntriesHandler(server Server) http.HandlerFunc {
